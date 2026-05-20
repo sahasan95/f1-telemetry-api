@@ -81,51 +81,31 @@ def get_active_drivers(session_key: Union[int, str] = "latest"):
     
 
 @app.get("/telemetry")
-def get_driver_telemetry(driver_number: int, session_key: Union[int, str] = "latest", limit: int = 10):
+def get_driver_telemetry(limit: int = 10):
     """
-    Fetches the absolute latest real-time car telemetry data frames for a specific driver.
-    Limits output size to prevent API throttling and excessive network overhead.
+    Reads directly from our real-time localized data store populated by our background pipeline.
+    Zero upstream network delays. Instant sub-millisecond response delivery.
     """
-    # OpenF1 Endpoint: https://api.openf1.org/v1/car_data?driver_number=44&session_key=latest
-    url = f"{OPEN_F1_BASE}/car_data?driver_number={driver_number}&session_key={session_key}"
+    import os
+    import json
+    STORE_FILE = "telemetry_store.json"
     
-    print(f"🏎️ Fetching latest {limit} telemetry frames for Driver #{driver_number}...")
-    
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        telemetry_raw = response.json()
-        
-        if not telemetry_raw:
-            return {
-                "driver_number": driver_number,
-                "session_key": session_key,
-                "message": "No live telemetry frames found for this driver in the current session."
-            }
-            
-        # Since OpenF1 returns sequential historical items up to the current second, 
-        # let's slice the array from the tail to grab the absolute latest packets.
-        latest_frames = telemetry_raw[-limit:]
-        latest_frames.reverse() # Order by newest first
-        
-        structured_telemetry = []
-        for frame in latest_frames:
-            structured_telemetry.append({
-                "timestamp": frame.get("date"),
-                "speed_kmh": frame.get("speed"),
-                "rpm": frame.get("rpm"),
-                "gear": frame.get("n_gear"),
-                "throttle_percentage": frame.get("throttle"),
-                "brake_active": frame.get("brake") == 100,  # 100 means fully pressed, 0 means off
-                "drs_status": frame.get("drs")
-            })
-            
+    if not os.path.exists(STORE_FILE):
         return {
-            "driver_number": driver_number,
-            "session_key": session_key,
-            "frames_returned": len(structured_telemetry),
-            "telemetry": structured_telemetry
+            "message": "Data store initializing. Please wait for the background ingestion worker to save data frames."
         }
         
-    except requests.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch telemetry from OpenF1: {str(e)}")
+    with open(STORE_FILE, "r") as f:
+        db = json.load(f)
+        
+    # Grab the newest frames out of our sliding pipeline window
+    telemetry_records = db.get("buffer", [])
+    latest_slices = telemetry_records[-limit:]
+    latest_slices.reverse() # Sort newest first
+    
+    return {
+        "driver_number": db.get("driver_number"),
+        "source": "local_ingestion_pipeline",
+        "frames_returned": len(latest_slices),
+        "telemetry": latest_slices
+    }

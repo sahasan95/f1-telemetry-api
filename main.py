@@ -1,9 +1,20 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # Add this import
 from typing import Union
 import requests
 import time
 
 app = FastAPI(title="F1 Analytics & Telemetry API")
+
+# --- CONFIGURE CORS MIDDLEWARE ---
+# This allows your local Vue dev server to communicate with the Python backend safely
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all local ports during development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 OPEN_F1_BASE = "https://api.openf1.org/v1"
 
@@ -109,3 +120,88 @@ def get_driver_telemetry(limit: int = 10):
         "frames_returned": len(latest_slices),
         "telemetry": latest_slices
     }
+
+@app.get("/tyre-matrix")
+def get_grid_tyre_matrix():
+    """
+    Queries all active driver records and maps out their current 
+    tyre compounds. Safely sorts pre-race staging states.
+    """
+    SESSION_KEY = "latest"
+    BASE_URL = "https://api.openf1.org/v1"
+    
+    try:
+        # 1. Grab drivers data
+        driver_res = requests.get(f"{BASE_URL}/drivers?session_key={SESSION_KEY}")
+        # 2. Grab stints data
+        stint_res = requests.get(f"{BASE_URL}/stints?session_key={SESSION_KEY}")
+        
+        if driver_res.status_code != 200 or stint_res.status_code != 200:
+            raise HTTPException(status_code=502, detail="Upstream F1 grid feeds unreachable")
+            
+        drivers = driver_res.json()
+        stints = stint_res.json()
+        
+        # If no drivers are returned yet for this specific session key, fallback to last known grid
+        if not drivers:
+            driver_res = requests.get(f"{BASE_URL}/drivers")
+            drivers = driver_res.json()[-20:] if driver_res.status_code == 200 else []
+        
+        # Build driver map with explicit string fallbacks to prevent sorting crashes
+        driver_map = {}
+        for d in drivers:
+            dn = d.get("driver_number")
+            if dn is not None:
+                driver_map[dn] = {
+                    "name": d.get("broadcast_name") or f"Driver {dn}",
+                    "code": d.get("name_acronym") or str(dn),
+                    "team": d.get("team_name") or "AAA_UNKNOWN", # Prefix ensures sorted grouping fallback
+                    "color": f"#{d['team_colour']}" if d.get("team_colour") else "#444"
+                }
+        
+        # Group stints by driver safely
+        latest_stints = {}
+        if isinstance(stints, list) and len(stints) > 0:
+            for s in stints:
+                dn = s.get("driver_number")
+                if dn is None:
+                    continue
+                if dn not in latest_stints or s.get("lap_start", 0) > latest_stints[dn].get("lap_start", 0):
+                    latest_stints[dn] = s
+                    
+        matrix = []
+        
+        # If stints are completely empty because the race is starting right now
+        if not latest_stints:
+            for dn, profile in driver_map.items():
+                matrix.append({
+                    "driver_number": dn,
+                    "broadcast_name": profile["name"],
+                    "acronym": profile["code"],
+                    "team_name": profile["team"],
+                    "team_color": profile["color"],
+                    "compound": "FORMATION LAP", # Perfect real-time status update!
+                    "stint_number": 0,
+                    "tyre_age_laps": 0
+                })
+        else:
+            # Build the matrix using active stint details
+            for dn, s_data in latest_stints.items():
+                profile = driver_map.get(dn, {"name": f"Driver {dn}", "code": str(dn), "team": "AAA_UNKNOWN", "color": "#737373"})
+                matrix.append({
+                    "driver_number": dn,
+                    "broadcast_name": profile["name"],
+                    "acronym": profile["code"],
+                    "team_name": profile["team"],
+                    "team_color": profile["color"],
+                    "compound": str(s_data.get("compound", "UNKNOWN")).upper(),
+                    "stint_number": s_data.get("stint_number", 1),
+                    "tyre_age_laps": s_data.get("tyre_age_laps", 0)
+                })
+            
+        # Secure sorting structure using strings explicitly to eliminate 500 crashes
+        matrix.sort(key=lambda x: (str(x["team_name"]), int(x["driver_number"])))
+        return {"session_key": SESSION_KEY, "grid_count": len(matrix), "stands": matrix}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

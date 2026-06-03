@@ -8,3 +8,12 @@ __pycache__/
 *.pyd
 
 .vscode/
+
+# Secret Environment variables (Holds OpenAI API key)
+.env
+
+# Local Chroma Vector Database files
+chroma_db/
+
+# Raw F1 data PDFs we use for testing
+*.pdf

@@ -1,20 +1,24 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware # Add this import
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Union
 import requests
 import time
 
+from app.api.v1.api import api_router
+
 app = FastAPI(title="F1 Analytics & Telemetry API")
 
 # --- CONFIGURE CORS MIDDLEWARE ---
-# This allows your local Vue dev server to communicate with the Python backend safely
+# This allows local Vue dev server to communicate with the Python backend safely
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all local ports during development
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(api_router, prefix="/api/v1")
 
 OPEN_F1_BASE = "https://api.openf1.org/v1"
 
@@ -27,8 +31,8 @@ DRIVER_CACHE = {
 }
 
 @app.get("/")
-def home():
-    return {"message": "Welcome to the F1 Analytics API Engine!"}
+def read_root():
+    return {"message": "F1 Telemetry & AI Strategy Engine API is running"}
 
 @app.get("/drivers")
 def get_active_drivers(session_key: Union[int, str] = "latest"):
